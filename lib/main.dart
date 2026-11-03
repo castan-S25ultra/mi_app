@@ -1,7 +1,14 @@
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:crypto/crypto.dart';
+import 'package:sqflite/sqflite.dart';
+import 'package:path/path.dart' as p;
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const MyApp());
 }
 
@@ -17,12 +24,408 @@ class MyApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2E5C8A)),
         useMaterial3: true,
       ),
-      home: const Inicio(),
+      home: const PantallaLogin(),
     );
   }
 }
 
-// Contenedor principal: barra de navegación inferior para cambiar de pantalla
+// ---------------------------------------------------------------------------
+// SERVICIO PARA GESTIONAR EL ARCHIVO JSON LOCAL
+// ---------------------------------------------------------------------------
+class JsonAuthService {
+  static Future<File> _getFile() async {
+    final directory = await getApplicationDocumentsDirectory();
+    final path = p.join(directory.path, 'usuarios.json');
+    final file = File(path);
+
+    if (!await file.exists()) {
+      await file.writeAsString(jsonEncode([]));
+    }
+    return file;
+  }
+
+  // Función para encriptar/hashear la contraseña con SHA-256
+  static String hashPassword(String password) {
+    final bytes = utf8.encode(password);
+    return sha256.convert(bytes).toString();
+  }
+
+  // Leer la lista de usuarios del JSON
+  static Future<List<dynamic>> obtenerUsuarios() async {
+    try {
+      final file = await _getFile();
+      final contenido = await file.readAsString();
+      return jsonDecode(contenido);
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // Registrar un nuevo usuario en el JSON
+  static Future<bool> registrarUsuario(String usuario, String password) async {
+    final usuarios = await obtenerUsuarios();
+
+    // Verificar si el usuario ya existe
+    bool existe = usuarios.any((u) => u['usuario'] == usuario);
+    if (existe) return false;
+
+    // Agregar el nuevo usuario con contraseña hasheada
+    usuarios.add({
+      'usuario': usuario,
+      'password': hashPassword(password),
+    });
+
+    final file = await _getFile();
+    await file.writeAsString(jsonEncode(usuarios));
+    return true;
+  }
+
+  // Validar credenciales desde el JSON
+  static Future<bool> validarLogin(String usuario, String password) async {
+    final usuarios = await obtenerUsuarios();
+    final passwordHash = hashPassword(password);
+
+    return usuarios.any((u) =>
+        u['usuario'] == usuario && u['password'] == passwordHash);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PANTALLA DE LOGIN
+// ---------------------------------------------------------------------------
+class PantallaLogin extends StatefulWidget {
+  const PantallaLogin({super.key});
+
+  @override
+  State<PantallaLogin> createState() => _PantallaLoginState();
+}
+
+class _PantallaLoginState extends State<PantallaLogin> {
+  final _formKey = GlobalKey<FormState>();
+  final TextEditingController _usuario = TextEditingController();
+  final TextEditingController _password = TextEditingController();
+
+  @override
+  void dispose() {
+    _usuario.dispose();
+    _password.dispose();
+    super.dispose();
+  }
+
+  Future<void> _iniciarSesion() async {
+    if (_formKey.currentState!.validate()) {
+      bool valido = await JsonAuthService.validarLogin(
+        _usuario.text.trim(),
+        _password.text.trim(),
+      );
+
+      if (!mounted) return;
+
+      if (valido) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => const Inicio()),
+        );
+      } else {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            icon: const Icon(Icons.error_outline, size: 64, color: Colors.red),
+            title: const Text('Error de acceso'),
+            content: const Text(
+              'Usuario o contraseña incorrectos.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 18),
+            ),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Intentar de nuevo'),
+              ),
+            ],
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(32.0),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 100,
+                    height: 60,
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.black, width: 2),
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                    alignment: Alignment.center,
+                    child: const Text('Logo', style: TextStyle(fontSize: 18)),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Mi App',
+                    style: TextStyle(fontSize: 36, fontWeight: FontWeight.w400),
+                  ),
+                  const SizedBox(height: 48),
+
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Padding(
+                        padding: EdgeInsets.only(top: 12.0),
+                        child: Text('User: ', style: TextStyle(fontSize: 20)),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextFormField(
+                          controller: _usuario,
+                          decoration: const InputDecoration(
+                            border: OutlineInputBorder(),
+                            hintText: 'User',
+                          ),
+                          validator: (value) =>
+                              value == null || value.isEmpty ? 'Ingresa un usuario' : null,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Padding(
+                        padding: EdgeInsets.only(top: 12.0),
+                        child: Text('Password: ', style: TextStyle(fontSize: 20)),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextFormField(
+                          controller: _password,
+                          obscureText: true,
+                          decoration: const InputDecoration(
+                            border: OutlineInputBorder(),
+                            hintText: '******',
+                          ),
+                          validator: (value) =>
+                              value == null || value.isEmpty ? 'Ingresa la contraseña' : null,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 32),
+
+                  OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.black, width: 2),
+                      padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 16),
+                    ),
+                    onPressed: _iniciarSesion,
+                    child: const Text(
+                      'Entrar',
+                      style: TextStyle(fontSize: 20, color: Colors.black),
+                    ),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  // Botón para ir al Registro
+                  TextButton(
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => const PantallaRegistro(),
+                        ),
+                      );
+                    },
+                    child: const Text(
+                      '¿No tienes cuenta? Regístrate aquí',
+                      style: TextStyle(fontSize: 16),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PANTALLA DE REGISTRO
+// ---------------------------------------------------------------------------
+class PantallaRegistro extends StatefulWidget {
+  const PantallaRegistro({super.key});
+
+  @override
+  State<PantallaRegistro> createState() => _PantallaRegistroState();
+}
+
+class _PantallaRegistroState extends State<PantallaRegistro> {
+  final _formKey = GlobalKey<FormState>();
+  final TextEditingController _usuario = TextEditingController();
+  final TextEditingController _password = TextEditingController();
+
+  @override
+  void dispose() {
+    _usuario.dispose();
+    _password.dispose();
+    super.dispose();
+  }
+
+  Future<void> _registrar() async {
+    if (_formKey.currentState!.validate()) {
+      bool exito = await JsonAuthService.registrarUsuario(
+        _usuario.text.trim(),
+        _password.text.trim(),
+      );
+
+      if (!mounted) return;
+
+      if (exito) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('¡Usuario registrado con éxito en JSON!')),
+        );
+        Navigator.pop(context); // Volver al login
+      } else {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            icon: const Icon(Icons.warning, size: 64, color: Colors.orange),
+            title: const Text('Registro Fallido'),
+            content: const Text('El nombre de usuario ya se encuentra registrado.'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Crear Cuenta')),
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(32.0),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text(
+                    'Registro',
+                    style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 32),
+
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Padding(
+                        padding: EdgeInsets.only(top: 12.0),
+                        child: Text('User: ', style: TextStyle(fontSize: 20)),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextFormField(
+                          controller: _usuario,
+                          decoration: const InputDecoration(
+                            border: OutlineInputBorder(),
+                            hintText: 'Nuevo Usuario',
+                          ),
+                          validator: (value) =>
+                              value == null || value.isEmpty ? 'Crea un usuario' : null,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Padding(
+                        padding: EdgeInsets.only(top: 12.0),
+                        child: Text('Password: ', style: TextStyle(fontSize: 20)),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextFormField(
+                          controller: _password,
+                          obscureText: true,
+                          decoration: const InputDecoration(
+                            border: OutlineInputBorder(),
+                            hintText: '******',
+                          ),
+                          validator: (value) {
+                            if (value == null || value.isEmpty) {
+                              return 'Crea una contraseña';
+                            }
+                            if (value.length < 4) {
+                              return 'Mínimo 4 caracteres';
+                            }
+                            return null;
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 32),
+
+                  OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Colors.black, width: 2),
+                      padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 16),
+                    ),
+                    onPressed: _registrar,
+                    child: const Text(
+                      'Registrar',
+                      style: TextStyle(fontSize: 20, color: Colors.black),
+                    ),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text(
+                      '¿Ya tienes cuenta? Inicia sesión',
+                      style: TextStyle(fontSize: 16),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// NAVEGACIÓN PRINCIPAL
+// ---------------------------------------------------------------------------
 class Inicio extends StatefulWidget {
   const Inicio({super.key});
 
@@ -36,13 +439,13 @@ class _InicioState extends State<Inicio> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // IndexedStack conserva lo escrito y el contador al cambiar de pestaña
       body: IndexedStack(
         index: _pestana,
         children: const [
           PantallaHola(),
           PantallaContador(),
           PantallaCupertino(),
+          PantallaCRUD(),
         ],
       ),
       bottomNavigationBar: NavigationBar(
@@ -53,6 +456,8 @@ class _InicioState extends State<Inicio> {
           NavigationDestination(icon: Icon(Icons.touch_app), label: 'Contador'),
           NavigationDestination(
               icon: Icon(Icons.phone_iphone), label: 'Cupertino'),
+          NavigationDestination(
+              icon: Icon(Icons.storage), label: 'Datos (CRUD)'),
         ],
       ),
     );
@@ -60,9 +465,180 @@ class _InicioState extends State<Inicio> {
 }
 
 // ---------------------------------------------------------------------------
-// PANTALLA 1: "Hola" arriba, logo animado al centro, fila (etiqueta + campo +
-// casilla), botón "Ver frase" debajo del campo y "Texto" abajo
+// MODELO Y HELPER DE BASE DE DATOS SQLITE (CRUD)
 // ---------------------------------------------------------------------------
+class Reporte {
+  final int? id;
+  final String titulo;
+
+  Reporte({this.id, required this.titulo});
+
+  Map<String, dynamic> toMap() {
+    return {'id': id, 'titulo': titulo};
+  }
+
+  factory Reporte.fromMap(Map<String, dynamic> map) {
+    return Reporte(id: map['id'], titulo: map['titulo']);
+  }
+}
+
+class DatabaseHelper {
+  static final DatabaseHelper _instance = DatabaseHelper._internal();
+  factory DatabaseHelper() => _instance;
+  DatabaseHelper._internal();
+
+  static Database? _database;
+
+  Future<Database> get database async {
+    if (_database != null) return _database!;
+    _database = await _initDatabase();
+    return _database!;
+  }
+
+  Future<Database> _initDatabase() async {
+    String path = p.join(await getDatabasesPath(), 'reportes.db');
+    return await openDatabase(
+      path,
+      version: 1,
+      onCreate: (db, version) async {
+        await db.execute('''
+          CREATE TABLE reportes(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            titulo TEXT
+          )
+        ''');
+      },
+    );
+  }
+
+  Future<int> insertReporte(Reporte reporte) async {
+    Database db = await database;
+    return await db.insert('reportes', reporte.toMap());
+  }
+
+  Future<List<Reporte>> getReportes() async {
+    Database db = await database;
+    var res = await db.query('reportes');
+    return res.isNotEmpty ? res.map((c) => Reporte.fromMap(c)).toList() : [];
+  }
+
+  Future<int> updateReporte(Reporte reporte) async {
+    Database db = await database;
+    return await db.update('reportes', reporte.toMap(),
+        where: 'id = ?', whereArgs: [reporte.id]);
+  }
+
+  Future<int> deleteReporte(int id) async {
+    Database db = await database;
+    return await db.delete('reportes', where: 'id = ?', whereArgs: [id]);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PANTALLAS SECUNDARIAS
+// ---------------------------------------------------------------------------
+class PantallaCRUD extends StatefulWidget {
+  const PantallaCRUD({super.key});
+
+  @override
+  State<PantallaCRUD> createState() => _PantallaCRUDState();
+}
+
+class _PantallaCRUDState extends State<PantallaCRUD> {
+  final dbHelper = DatabaseHelper();
+  List<Reporte> reportes = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _cargarDatos();
+  }
+
+  Future<void> _cargarDatos() async {
+    final datos = await dbHelper.getReportes();
+    setState(() => reportes = datos);
+  }
+
+  void _mostrarDialogo({Reporte? reporteActual}) {
+    final TextEditingController tituloCtrl =
+        TextEditingController(text: reporteActual?.titulo ?? '');
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(reporteActual == null ? 'Nuevo Registro' : 'Editar Registro'),
+        content: TextField(
+          controller: tituloCtrl,
+          decoration: const InputDecoration(labelText: 'Título'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              if (tituloCtrl.text.isNotEmpty) {
+                if (reporteActual == null) {
+                  await dbHelper.insertReporte(Reporte(titulo: tituloCtrl.text));
+                } else {
+                  await dbHelper.updateReporte(Reporte(
+                      id: reporteActual.id, titulo: tituloCtrl.text));
+                }
+                _cargarDatos();
+                if (context.mounted) Navigator.pop(context);
+              }
+            },
+            child: const Text('Guardar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Base de Datos (CRUD)'),
+        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+      ),
+      body: reportes.isEmpty
+          ? const Center(child: Text('No hay registros. Toca + para añadir.'))
+          : ListView.builder(
+              itemCount: reportes.length,
+              itemBuilder: (context, index) {
+                final reporte = reportes[index];
+                return ListTile(
+                  leading: CircleAvatar(child: Text('${reporte.id}')),
+                  title: Text(reporte.titulo),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.edit, color: Colors.blue),
+                        onPressed: () => _mostrarDialogo(reporteActual: reporte),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.red),
+                        onPressed: () async {
+                          await dbHelper.deleteReporte(reporte.id!);
+                          _cargarDatos();
+                        },
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => _mostrarDialogo(),
+        child: const Icon(Icons.add),
+      ),
+    );
+  }
+}
+
 class PantallaHola extends StatefulWidget {
   const PantallaHola({super.key});
 
@@ -75,7 +651,6 @@ class _PantallaHolaState extends State<PantallaHola>
   final TextEditingController _nombre = TextEditingController();
   bool _marcado = false;
 
-  // Animación automática del logo: sube y baja sin parar (con un ligero giro)
   late final AnimationController _anim = AnimationController(
     vsync: this,
     duration: const Duration(seconds: 2),
@@ -91,7 +666,6 @@ class _PantallaHolaState extends State<PantallaHola>
     super.dispose();
   }
 
-  // Navega a otra página de la misma app
   void _irAFrase() {
     Navigator.push(
       context,
@@ -114,8 +688,6 @@ class _PantallaHolaState extends State<PantallaHola>
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
                   const Text('Hola', style: TextStyle(fontSize: 40)),
-
-                  // Logo con movimiento automático (no hay que tocarlo)
                   AnimatedBuilder(
                     animation: _flota,
                     builder: (context, child) {
@@ -127,7 +699,6 @@ class _PantallaHolaState extends State<PantallaHola>
                         ),
                       );
                     },
-                    // Si el archivo no se encuentra, muestra un ícono.
                     child: Image.asset(
                       'assets/images/logo_sre.png',
                       width: 220,
@@ -138,8 +709,6 @@ class _PantallaHolaState extends State<PantallaHola>
                       ),
                     ),
                   ),
-
-                  // Caja de texto y, justo debajo, el botón que abre otra página
                   Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -169,7 +738,7 @@ class _PantallaHolaState extends State<PantallaHola>
                       ),
                     ],
                   ),
-                    Stack(
+                  Stack(
                     alignment: Alignment.center,
                     children: [
                       const Text(
@@ -182,7 +751,6 @@ class _PantallaHolaState extends State<PantallaHola>
                       ),
                     ],
                   ),
-                  
                 ],
               ),
             ),
@@ -193,9 +761,6 @@ class _PantallaHolaState extends State<PantallaHola>
   }
 }
 
-// ---------------------------------------------------------------------------
-// PÁGINA NUEVA: muestra una frase (y el nombre escrito, si lo hay)
-// ---------------------------------------------------------------------------
 class PaginaFrase extends StatelessWidget {
   final String nombre;
 
@@ -238,10 +803,6 @@ class PaginaFrase extends StatelessWidget {
   }
 }
 
-// ---------------------------------------------------------------------------
-// PANTALLA 2: fondo de arcoíris, campo de texto, botón "Prueba" y texto en
-// mayúsculas que refleja lo escrito. Cada clic agranda el texto.
-// ---------------------------------------------------------------------------
 class PantallaContador extends StatefulWidget {
   const PantallaContador({super.key});
 
@@ -262,7 +823,6 @@ class _PantallaContadorState extends State<PantallaContador> {
 
   @override
   Widget build(BuildContext context) {
-    // El contador "afecta algo": el texto de abajo crece con cada clic (máx. 48)
     final double tamano = (24 + _contador * 2).clamp(24, 48).toDouble();
 
     return SizedBox.expand(
@@ -325,12 +885,6 @@ class _PantallaContadorState extends State<PantallaContador> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// PANTALLA 3 (tarea de hoy): algo Cupertino + una alerta + un Stack
-//  - Cupertino: CupertinoTextField, CupertinoButton y CupertinoAlertDialog
-//  - Alerta:    showCupertinoDialog al presionar "Entrar"
-//  - Stack:     capas apiladas (fondo, decoración y formulario encima)
-// ---------------------------------------------------------------------------
 class PantallaCupertino extends StatefulWidget {
   const PantallaCupertino({super.key});
 
@@ -347,7 +901,6 @@ class _PantallaCupertinoState extends State<PantallaCupertino> {
     super.dispose();
   }
 
-  // Alerta estilo iOS
   void _mostrarAlerta() {
     final nombre = _usuario.text.trim();
     showCupertinoDialog(
@@ -375,7 +928,6 @@ class _PantallaCupertinoState extends State<PantallaCupertino> {
       child: Stack(
         alignment: Alignment.center,
         children: [
-          // Capa 1: fondo degradado
           Positioned.fill(
             child: Container(
               decoration: const BoxDecoration(
@@ -391,8 +943,6 @@ class _PantallaCupertinoState extends State<PantallaCupertino> {
               ),
             ),
           ),
-
-          // Capa 2: decoración detrás del formulario
           const Positioned(
             top: 70,
             left: 24,
@@ -405,8 +955,6 @@ class _PantallaCupertinoState extends State<PantallaCupertino> {
             child: Icon(Icons.waving_hand,
                 size: 90, color: Color(0xFFFFB74D)),
           ),
-
-          // Capa 3: formulario estilo iOS, encima de todo
           Padding(
             padding: const EdgeInsets.all(32),
             child: ConstrainedBox(
